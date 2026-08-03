@@ -1,0 +1,14 @@
+# compiled binary
+/paramvoid
+paramvoid.exe
+
+# scan artifacts
+*.state
+paramvoid_output.json
+*.out
+
+# editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
