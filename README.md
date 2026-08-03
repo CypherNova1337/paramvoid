@@ -158,10 +158,8 @@ One name per line; lines starting with `#` are ignored.
 All HTTP goes through one adaptive client, so steps 2–6 never have to think
 about rate limiting — a throttling target just makes them slower, not fatal.
 
-## Notes
+## Note
 
-- `--passive` harvesting (wayback / commoncrawl / OTX) isn't built in. If you
-  collect param names that way, feed them in with `-w`.
 - Resuming mid-target re-derives the response baseline on restart (it depends on
   live server behaviour), then continues the saved chunk queue.
 
