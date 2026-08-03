@@ -1,4 +1,4 @@
-# paramvoid
+# Paramvoid
 
 A fast, resilient HTTP **parameter discovery** tool. Point it at a URL (or a
 list of them) and it finds the hidden query/body parameters a server quietly
@@ -44,7 +44,7 @@ cd paramvoid
 go build -o paramvoid .
 ```
 
-Requires Go 1.21+. That's the only prerequisite — no Python, nothing else.
+Requires Go 1.21+. That's the only prerequisite.
 
 ## Usage
 
@@ -158,10 +158,8 @@ One name per line; lines starting with `#` are ignored.
 All HTTP goes through one adaptive client, so steps 2–6 never have to think
 about rate limiting — a throttling target just makes them slower, not fatal.
 
-## Notes
+## Note
 
-- `--passive` harvesting (wayback / commoncrawl / OTX) isn't built in. If you
-  collect param names that way, feed them in with `-w`.
 - Resuming mid-target re-derives the response baseline on restart (it depends on
   live server behaviour), then continues the saved chunk queue.
 

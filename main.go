@@ -1,8 +1,3 @@
-// Command paramvoid is a resilient HTTP parameter-discovery tool inspired by
-// Arjun. It finds hidden/unlinked request parameters by learning a response
-// baseline and binary-narrowing a wordlist. Its distinguishing features are an
-// adaptive rate limiter (it slows down and retries instead of crashing on HTTP
-// 429/503) and resumable scans (checkpoint to disk, continue with --resume).
 package main
 
 import (
