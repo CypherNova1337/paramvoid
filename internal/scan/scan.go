@@ -78,20 +78,31 @@ func Run(ctx context.Context, client *httpx.Client, cfg *config.Config, req http
 	}
 	e.factors = anomaly.Define(r1, v1, r2, v2)
 
-	// Prune signals that fluctuate even on identical junk requests.
-	for i := 0; i < 8 && e.factors.Active() > 0; i++ {
-		rj, vj, err := e.send([]string{randName()})
-		if err != nil || rj == nil {
+	// Calibrate the fingerprint against junk. A known-nonexistent parameter MUST
+	// test negative; any factor a junk name trips is non-discriminating — the page
+	// reflects input, jitters between requests, or its length scales with the
+	// echoed token — and gets dropped. We deliberately probe with junk of VARYING
+	// length: uniform junk leaves a reflection-driven length/word factor looking
+	// stable, after which every real word of a different length is falsely
+	// confirmed (the classic "whole wordlist comes back" failure).
+	for _, n := range []int{3, 6, 10, 15, 22, 8, 4} {
+		if e.factors.Active() == 0 {
 			break
 		}
-		reason := anomaly.Compare(rj, e.factors, vj)
-		if reason == anomaly.None {
-			break
+		rj, vj, err := e.send([]string{randNameLen(n)})
+		if err != nil || rj == nil || rj.RateLimited {
+			continue
 		}
-		e.factors.Disable(reason)
+		for { // disable EVERY factor this junk trips, not just the first
+			reason := anomaly.Compare(rj, e.factors, vj)
+			if reason == anomaly.None {
+				break
+			}
+			e.factors.Disable(reason)
+		}
 	}
 	if e.factors.Active() == 0 {
-		logx.Bad("Target response is too dynamic to fingerprint; skipping %s", req.URL)
+		logx.Bad("Can't distinguish real parameters from junk on %s (reflective or highly dynamic response); skipping", req.URL)
 		return res, StatusSkipped
 	}
 	logx.Info("Analysing HTTP response for anomalies")
@@ -122,6 +133,7 @@ func Run(ctx context.Context, client *httpx.Client, cfg *config.Config, req http
 	logx.Run("Logicforcing the endpoint")
 	prevCount := len(queue)
 	const maxLevels = 64
+	const falsePositiveCeiling = 100
 	for level := 0; len(queue) > 0; level++ {
 		if ctx.Err() != nil {
 			st.SaveProgress(req.URL, res.Method, queue, candidates, true)
@@ -149,6 +161,18 @@ func Run(ctx context.Context, client *httpx.Client, cfg *config.Config, req http
 
 	// --- Verification ----------------------------------------------------
 	confirmed := e.verify(dedupe(candidates))
+
+	// Backstop against false-positive storms. A generic wordlist should never
+	// yield a huge number of valid parameters on a single endpoint; if it does,
+	// the target isn't distinguishing them (it echoes or accepts arbitrary input)
+	// and every "hit" is noise. Discard rather than write thousands of junk rows.
+	if len(confirmed) > falsePositiveCeiling {
+		logx.ClearLine()
+		logx.Bad("Discarding %d hits for %s — implausibly many; the target appears to accept or echo arbitrary parameters rather than reveal real ones", len(confirmed), req.URL)
+		st.MarkDone(req.URL, res.Method, nil)
+		return res, StatusEmpty
+	}
+
 	res.Params = confirmed
 	st.MarkDone(req.URL, res.Method, confirmed)
 
@@ -341,10 +365,19 @@ func randValue() string {
 	return "z" + string(b)
 }
 
-// randName returns a random junk parameter name (used to learn the baseline).
-func randName() string {
+// randName returns an 8-char random junk parameter name.
+func randName() string { return randNameLen(8) }
+
+// randNameLen returns a random junk parameter name of the given length. Varying
+// the length is essential for calibration: a reflective page echoes the name
+// back, so only differently-sized junk reveals a length/word factor that would
+// otherwise look stable and falsely confirm every real word.
+func randNameLen(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyz"
-	b := make([]byte, 8)
+	if n < 1 {
+		n = 1
+	}
+	b := make([]byte, n)
 	for i := range b {
 		b[i] = letters[rand.Intn(len(letters))]
 	}

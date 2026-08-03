@@ -453,10 +453,13 @@ func printBanner() {
 	if *flagQuiet {
 		return
 	}
-	fmt.Fprintf(os.Stderr, `%s    _
-   /_| _ '
-  (  |/ /(//)  paramvoid v%s
-      _/       resilient HTTP parameter discovery%s
+	fmt.Fprintf(os.Stderr, `%s
+ █████  ███  █████  ███  █   █ █   █  ███  █████ ████
+ █   █ █   █ █   █ █   █ ██ ██ █   █ █   █   █   █   █
+ █████ █████ █████ █████ █ █ █ █   █ █   █   █   █   █
+ █     █   █ █  █  █   █ █   █  █ █  █   █   █   █   █
+ █     █   █ █   █ █   █ █   █   █    ███  █████ ████
+         v%s · resilient HTTP parameter discovery%s
 
 `, logx.Green, version, logx.End)
 }
