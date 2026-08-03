@@ -44,7 +44,7 @@ cd paramvoid
 go build -o paramvoid .
 ```
 
-Requires Go 1.21+. That's the only prerequisite — no Python, nothing else.
+Requires Go 1.21+. That's the only prerequisite.
 
 ## Usage
 
