@@ -1,4 +1,4 @@
-# paramvoid
+# Paramvoid
 
 A fast, resilient HTTP **parameter discovery** tool. Point it at a URL (or a
 list of them) and it finds the hidden query/body parameters a server quietly
