@@ -21,9 +21,10 @@ const (
 )
 
 var (
-	mu    sync.Mutex
-	quiet bool
-	color = true
+	mu       sync.Mutex
+	quiet    bool
+	color    = true
+	progress = true
 )
 
 // SetQuiet suppresses all output when q is true.
@@ -31,6 +32,25 @@ func SetQuiet(q bool) { mu.Lock(); quiet = q; mu.Unlock() }
 
 // SetColor toggles ANSI coloring (disable for non-tty / file logging).
 func SetColor(c bool) { mu.Lock(); color = c; mu.Unlock() }
+
+// SetProgress toggles the in-place progress counter. Disable it when stderr is
+// not a terminal so redirected logs and files don't fill up with carriage
+// returns and half-overwritten counter lines.
+func SetProgress(p bool) { mu.Lock(); progress = p; mu.Unlock() }
+
+// Paint wraps s in the given ANSI color code when coloring is enabled, and
+// returns s unchanged otherwise. Use it for inline highlights inside a message
+// (e.g. a discovered parameter name) so they honour --no-color and the non-tty
+// auto-detection instead of hardcoding escape codes at the call site.
+func Paint(code, s string) string {
+	mu.Lock()
+	on := color
+	mu.Unlock()
+	if !on {
+		return s
+	}
+	return code + s + End
+}
 
 func emit(prefix, colorCode, format string, a ...any) {
 	mu.Lock()
@@ -65,10 +85,11 @@ func Res(format string, a ...any) { emit("[<]", Cyan, format, a...) }
 func Warn(format string, a ...any) { emit("[!]", Yellow, format, a...) }
 
 // Progress overwrites the current line (no newline). Used for chunk counters.
+// It is a no-op when quiet or when the progress counter is disabled (non-tty).
 func Progress(format string, a ...any) {
 	mu.Lock()
 	defer mu.Unlock()
-	if quiet {
+	if quiet || !progress {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "\r"+format, a...)
@@ -78,7 +99,7 @@ func Progress(format string, a ...any) {
 func ClearLine() {
 	mu.Lock()
 	defer mu.Unlock()
-	if quiet {
+	if quiet || !progress {
 		return
 	}
 	fmt.Fprint(os.Stderr, "\r\033[K")
