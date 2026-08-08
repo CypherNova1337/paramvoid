@@ -78,18 +78,30 @@ func Run(ctx context.Context, client *httpx.Client, cfg *config.Config, req http
 	}
 	e.factors = anomaly.Define(r1, v1, r2, v2)
 
-	// Calibrate the fingerprint against junk. A known-nonexistent parameter MUST
-	// test negative; any factor a junk name trips is non-discriminating — the page
-	// reflects input, jitters between requests, or its length scales with the
-	// echoed token — and gets dropped. We deliberately probe with junk of VARYING
-	// length: uniform junk leaves a reflection-driven length/word factor looking
-	// stable, after which every real word of a different length is falsely
-	// confirmed (the classic "whole wordlist comes back" failure).
-	for _, n := range []int{3, 6, 10, 15, 22, 8, 4} {
+	// Calibrate the fingerprint against junk the server does NOT recognise. A
+	// known-nonexistent parameter MUST test negative, so any factor that junk trips
+	// is non-discriminating and gets dropped. We probe along two axes:
+	//
+	//  1. NAME LENGTH — a single junk name of varying length. A reflective page
+	//     echoes the name back, so its body length scales with it; uniform-length
+	//     junk leaves that length factor looking stable, after which every real
+	//     word of a different length is falsely confirmed (the classic "whole
+	//     wordlist comes back" failure).
+	//
+	//  2. PARAMETER COUNT — junk *chunks* of varying size, up to the size we will
+	//     actually send while narrowing. A page whose length, word count, or line
+	//     count grows with the NUMBER of parameters echoed (a reflective page, or
+	//     one that lists "unknown parameters: a, b, c") trips those factors on
+	//     every multi-param chunk. A single-name probe can't see that — one junk
+	//     name yields the same word/line count as the baseline — so without a
+	//     count axis the binary search explodes to test the entire wordlist one
+	//     name at a time before verification rejects each, costing ~2x the
+	//     wordlist in requests to ultimately find nothing.
+	for _, names := range e.calibrationProbes() {
 		if e.factors.Active() == 0 {
 			break
 		}
-		rj, vj, err := e.send([]string{randNameLen(n)})
+		rj, vj, err := e.send(names)
 		if err != nil || rj == nil || rj.RateLimited {
 			continue
 		}
@@ -197,6 +209,55 @@ func (e *engine) send(names []string) (*httpx.Response, []string, error) {
 	return resp, vals, err
 }
 
+// calibrationProbes returns the sequence of junk parameter sets used to prune
+// non-discriminating signals: single names of varying length (to catch
+// reflection that scales body length with the echoed name), followed by junk
+// chunks of varying count up to the narrowing chunk size (to catch pages whose
+// length/word/line counts scale with the NUMBER of parameters echoed).
+func (e *engine) calibrationProbes() [][]string {
+	probes := [][]string{
+		{randNameLen(3)}, {randNameLen(6)}, {randNameLen(10)},
+		{randNameLen(15)}, {randNameLen(22)}, {randNameLen(8)}, {randNameLen(4)},
+	}
+	for _, n := range countProbeSizes(e.cfg.ChunkSize) {
+		probes = append(probes, randNames(n))
+	}
+	return probes
+}
+
+// countProbeSizes picks a few multi-parameter chunk sizes to calibrate against,
+// growing toward the real narrowing chunk size so any count-driven signal is
+// observed at roughly the scale it will actually appear during narrowing. Very
+// large chunk sizes are capped so calibration never builds an enormous request.
+func countProbeSizes(chunk int) []int {
+	if chunk < 2 {
+		return nil
+	}
+	maxN := chunk
+	if maxN > 128 {
+		maxN = 128
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, s := range []int{4, 16, maxN} {
+		if s < 2 || s > maxN || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// randNames returns n distinct random junk parameter names.
+func randNames(n int) []string {
+	names := make([]string, n)
+	for i := range names {
+		names[i] = randName()
+	}
+	return names
+}
+
 // processLevel tests every chunk in the current level concurrently. Chunks whose
 // response deviates from the baseline are split in half (or recorded as a single
 // candidate); chunks with no deviation are discarded. Chunks that error are
@@ -245,7 +306,7 @@ func (e *engine) processLevel(queue [][]string) (splits [][]string, singles []st
 					mu.Unlock()
 				}()
 				n := atomic.AddInt32(&done, 1)
-				logx.Progress("%s[!]%s Processing chunks: %d/%d ", logx.Yellow, logx.End, n, total)
+				logx.Progress("%s Processing chunks: %d/%d ", logx.Paint(logx.Yellow, "[!]"), n, total)
 			}
 		}()
 	}
@@ -287,7 +348,7 @@ func (e *engine) verify(names []string) []string {
 		}
 		confirmed = append(confirmed, name)
 		if single {
-			logx.Res("parameter detected: %s%s%s (based on: %s)", logx.Bold, name, logx.End, reason1)
+			logx.Res("parameter detected: %s (based on: %s)", logx.Paint(logx.Bold, name), reason1)
 		}
 	}
 	return confirmed

@@ -103,6 +103,11 @@ One name per line; lines starting with `#` are ignored.
   writes `paramvoid_output.json` in the working directory by default, so a bulk
   scan never ends with results only on screen. The file is rewritten after each
   URL completes, so partial results survive a `Ctrl-C` or crash.
+- **Clean output when piped.** Status logging goes to stderr; results go to the
+  output file (and stdout is left free). When stderr isn't a terminal — piped,
+  redirected, or running in CI — color and the in-place progress counter switch
+  off automatically, so captured logs stay free of escape codes and stray
+  carriage returns. `NO_COLOR` and `--no-color` are honoured too.
 - **URLs are auto-corrected.** Both `-u` and every line of a `-i` list get
   cleaned before scanning: whitespace/quotes trimmed, `https://` prepended when
   a scheme is missing (a bare `example.com` works), malformed lines skipped with
@@ -135,7 +140,9 @@ One name per line; lines starting with `#` are ignored.
 | `--state` | — | Checkpoint file (enables resume) |
 | `--resume` | off | Resume from `--state` |
 | `--retries` | `3` | Transient network-error retries per request |
+| `--no-color` | auto | Disable colored output (auto-off when stderr isn't a terminal) |
 | `-q` | off | Quiet mode |
+| `--version` | — | Print version and exit |
 
 ## How it works
 
@@ -145,7 +152,11 @@ One name per line; lines starting with `#` are ignored.
    target, a filtered header set, and whether random values reflect in the body.
    Only signals that agree across both baselines are trusted.
 3. **Factor stabilization** — extra junk requests prune any signal that
-   fluctuates on its own, so dynamic pages don't generate false positives.
+   fluctuates on its own, so dynamic pages don't generate false positives. Junk
+   is probed along two axes — varying *name length* and varying *parameter
+   count* — so a page that echoes input back (a reflective page, or one that
+   lists "unknown parameters: a, b, c") has its length/word/line signals dropped
+   up front instead of making the search test every word one at a time.
 4. **Heuristic seeding** — parameter-like names already visible in the response
    (form/input names, JSON keys) are tested first.
 5. **Narrowing** — the wordlist is chunked and each chunk sent at once. A chunk

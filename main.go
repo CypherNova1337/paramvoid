@@ -30,6 +30,18 @@ func main() {
 	registerFlags()
 	flag.Parse()
 
+	if *flagVersion {
+		fmt.Printf("paramvoid %s\n", version)
+		return
+	}
+
+	// Auto-detect a non-interactive stderr (piped, redirected, or CI) and turn off
+	// ANSI color and the in-place progress counter so logs and files stay clean.
+	// Explicit flags / NO_COLOR still win.
+	if !stderrIsTerminal() {
+		logx.SetColor(false)
+		logx.SetProgress(false)
+	}
 	if os.Getenv("NO_COLOR") != "" || *flagNoColor {
 		logx.SetColor(false)
 	}
@@ -144,6 +156,7 @@ var (
 	flagResume     *bool
 	flagRetries    *int
 	flagNoColor    *bool
+	flagVersion    *bool
 )
 
 func registerFlags() {
@@ -173,6 +186,18 @@ func registerFlags() {
 	flagResume = boolPtr("resume", false, "Resume from the --state checkpoint file")
 	flagRetries = intPtr("retries", 3, "Transient network-error retries per request")
 	flagNoColor = boolPtr("no-color", false, "Disable colored output")
+	flagVersion = boolPtr("version", false, "Print version and exit")
+}
+
+// stderrIsTerminal reports whether stderr is an interactive terminal (as opposed
+// to a pipe, file, or CI capture). Uses only the standard library so the binary
+// stays dependency-free.
+func stderrIsTerminal() bool {
+	fi, err := os.Stderr.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 // buildConfig resolves flags into a Config, the request list, and the wordlist.
@@ -448,15 +473,14 @@ func printBanner() {
 	if *flagQuiet {
 		return
 	}
-	fmt.Fprintf(os.Stderr, `%s
+	art := fmt.Sprintf(`
  █████  ███  █████  ███  █   █ █   █  ███  █████ ████
  █   █ █   █ █   █ █   █ ██ ██ █   █ █   █   █   █   █
  █████ █████ █████ █████ █ █ █ █   █ █   █   █   █   █
  █     █   █ █  █  █   █ █   █  █ █  █   █   █   █   █
  █     █   █ █   █ █   █ █   █   █    ███  █████ ████
-         v%s · resilient HTTP parameter discovery%s
-
-`, logx.Green, version, logx.End)
+         v%s · resilient HTTP parameter discovery`, version)
+	fmt.Fprintf(os.Stderr, "%s\n\n", logx.Paint(logx.Green, art))
 }
 
 func printSummary(results []scan.Result, sent int64, elapsed time.Duration) {
