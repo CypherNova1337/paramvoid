@@ -24,7 +24,7 @@ import (
 	"github.com/CypherNova1337/paramvoid/internal/wordlist"
 )
 
-const version = "1.0.0"
+const version = "1.0.3"
 
 func main() {
 	registerFlags()
