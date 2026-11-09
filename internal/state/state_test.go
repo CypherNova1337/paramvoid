@@ -3,6 +3,8 @@ package state
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/CypherNova1337/paramvoid/internal/finding"
 )
 
 func TestNilStateIsSafe(t *testing.T) {
@@ -15,7 +17,7 @@ func TestNilStateIsSafe(t *testing.T) {
 		t.Fatal("nil state Get should be nil")
 	}
 	s.SaveProgress("x", "GET", nil, nil, true)
-	s.MarkDone("x", "GET", nil)
+	s.MarkDone("x", "GET", nil, nil)
 	s.Flush()
 	s.Remove()
 }
@@ -28,7 +30,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.SaveProgress("http://a/", "GET", [][]string{{"a", "b"}, {"c"}}, []string{"cand"}, true)
-	s.MarkDone("http://b/", "POST", []string{"user_id", "debug"})
+	s.MarkDone("http://b/", "POST", []string{"user_id", "debug"},
+		[]finding.Finding{{Param: "user_id", Reason: "http-code", Confidence: finding.High}})
 
 	// Reload with resume and verify persistence.
 	s2, err := Load(p, true)
@@ -51,7 +54,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestLoadWithoutResumeStartsFresh(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "s.json")
 	s, _ := Load(p, false)
-	s.MarkDone("http://a/", "GET", []string{"x"})
+	s.MarkDone("http://a/", "GET", []string{"x"}, nil)
 
 	// Without resume, a fresh Load ignores the existing file.
 	s2, err := Load(p, false)

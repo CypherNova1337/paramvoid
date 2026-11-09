@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/CypherNova1337/paramvoid/internal/config"
+	"github.com/CypherNova1337/paramvoid/internal/finding"
 	"github.com/CypherNova1337/paramvoid/internal/httpx"
 	"github.com/CypherNova1337/paramvoid/internal/ratelimit"
 )
@@ -38,9 +39,9 @@ func paramNames(r *http.Request) map[string]bool {
 	return names
 }
 
-// runScan wires up a client + config and scans one URL, returning the confirmed
-// params (sorted), the status, and the total number of HTTP requests sent.
-func runScan(t *testing.T, method, url string, words []string) ([]string, Status, int64) {
+// runScanFull wires up a client + config and scans one URL, returning the full
+// result, the status, and the total number of HTTP requests sent.
+func runScanFull(t *testing.T, method, url string, words []string) (Result, Status, int64) {
 	t.Helper()
 	cfg := &config.Config{
 		Method:     method,
@@ -59,9 +60,26 @@ func runScan(t *testing.T, method, url string, words []string) ([]string, Status
 	}
 	req := httpx.Request{URL: url, Method: method}
 	res, status := Run(context.Background(), client, cfg, req, words, nil)
+	return res, status, client.Sent()
+}
+
+// runScan returns just the confirmed param names (sorted), status, and requests.
+func runScan(t *testing.T, method, url string, words []string) ([]string, Status, int64) {
+	t.Helper()
+	res, status, sent := runScanFull(t, method, url, words)
 	got := append([]string(nil), res.Params...)
 	sort.Strings(got)
-	return got, status, client.Sent()
+	return got, status, sent
+}
+
+// findingFor returns the finding for a given param name, or false.
+func findingFor(res Result, name string) (finding.Finding, bool) {
+	for _, f := range res.Findings {
+		if f.Param == name {
+			return f, true
+		}
+	}
+	return finding.Finding{}, false
 }
 
 // baseWords is a wordlist that contains the "real" params plus lots of noise.
@@ -218,5 +236,98 @@ func TestScanUnreachable(t *testing.T) {
 	_, status, _ := runScan(t, "GET", "http://127.0.0.1:1/nope", baseWords("x"))
 	if status != StatusSkipped {
 		t.Fatalf("status = %v, want Skipped", status)
+	}
+}
+
+// A status-code signal is high-confidence; the finding records the reason.
+func TestFindingConfidenceHigh(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["admin"]; ok {
+			w.WriteHeader(403)
+			return
+		}
+		fmt.Fprint(w, "<html><body>normal page content here</body></html>")
+	}))
+	defer srv.Close()
+	res, status, _ := runScanFull(t, "GET", srv.URL, baseWords("admin"))
+	if status != StatusOK {
+		t.Fatalf("status = %v", status)
+	}
+	f, ok := findingFor(res, "admin")
+	if !ok {
+		t.Fatalf("admin not found; findings=%v", res.Findings)
+	}
+	if f.Confidence != finding.High || f.Reason != "http-code" {
+		t.Fatalf("admin finding = %+v, want high/http-code", f)
+	}
+}
+
+// A hit on a static asset (robots.txt) is kept but downgraded to low with a note,
+// because a static file cannot have a real server-side parameter.
+func TestFindingStaticAssetDowngrade(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		extra := ""
+		if _, ok := r.URL.Query()["q"]; ok {
+			extra = " and more and more and more"
+		}
+		fmt.Fprintf(w, "User-agent: *\nDisallow:%s\n", extra)
+	}))
+	defer srv.Close()
+	res, _, _ := runScanFull(t, "GET", srv.URL+"/robots.txt", baseWords("q"))
+	f, ok := findingFor(res, "q")
+	if !ok {
+		t.Fatalf("q not found on static asset; findings=%v", res.Findings)
+	}
+	if f.Confidence != finding.Low {
+		t.Fatalf("static-asset finding confidence = %v, want low", f.Confidence)
+	}
+	hasNote := false
+	for _, n := range f.Notes {
+		if n == "static-asset" {
+			hasNote = true
+		}
+	}
+	if !hasNote {
+		t.Fatalf("expected static-asset note, got %v", f.Notes)
+	}
+}
+
+func TestIsStaticAsset(t *testing.T) {
+	static := []string{
+		"http://x/robots.txt", "https://x/sitemap.xml", "http://x/a/app.js",
+		"http://x/style.css", "http://x/img/logo.png?v=2", "http://x/f.WOFF2",
+	}
+	dynamic := []string{
+		"http://x/", "http://x/overview/default.aspx", "http://x/api/users",
+		"http://x/_next/image", "http://x/data.json", "http://x/do.action",
+	}
+	for _, u := range static {
+		if !isStaticAsset(u) {
+			t.Errorf("isStaticAsset(%q) = false, want true", u)
+		}
+	}
+	for _, u := range dynamic {
+		if isStaticAsset(u) {
+			t.Errorf("isStaticAsset(%q) = true, want false", u)
+		}
+	}
+}
+
+func TestHeuristicSkipsFrameworkKeys(t *testing.T) {
+	body := `<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"realParam":1}},"buildId":"abc","query":{}}</script><input name="search_box">`
+	got := heuristic(body)
+	has := func(s string) bool {
+		for _, g := range got {
+			if g == s {
+				return true
+			}
+		}
+		return false
+	}
+	if has("pageProps") || has("buildId") || has("__NEXT_DATA__") {
+		t.Fatalf("heuristic seeded framework keys: %v", got)
+	}
+	if !has("realParam") || !has("search_box") {
+		t.Fatalf("heuristic dropped real candidates: %v", got)
 	}
 }
