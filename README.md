@@ -4,7 +4,7 @@ Finds the HTTP parameters a web application accepts but never tells you about.
 
 ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 ![go](https://img.shields.io/badge/go-1.21%2B-00ADD8?style=flat-square)
-![release](https://img.shields.io/badge/release-v1.0.3-brightgreen?style=flat-square)
+![release](https://img.shields.io/badge/release-v1.0.5-brightgreen?style=flat-square)
 
 ## What it does
 
