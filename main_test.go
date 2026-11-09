@@ -1,6 +1,74 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/CypherNova1337/paramvoid/internal/finding"
+	"github.com/CypherNova1337/paramvoid/internal/scan"
+)
+
+func mkResult(url string, params ...string) scan.Result {
+	r := scan.Result{URL: url, Method: "GET", Params: params}
+	for _, p := range params {
+		r.Findings = append(r.Findings, finding.Finding{Param: p, Reason: "body-length", Confidence: finding.Medium})
+	}
+	return r
+}
+
+// markSiteWide must downgrade a param that recurs across most of a host's URLs,
+// while leaving a param that appears on just one page alone.
+func TestMarkSiteWide(t *testing.T) {
+	var results []scan.Result
+	// 6 pages on one host all expose "state"; only one also exposes "search".
+	for i, path := range []string{"/a", "/b", "/c", "/d", "/e", "/f"} {
+		if i == 0 {
+			results = append(results, mkResult("https://core.example.com"+path, "state", "search"))
+		} else {
+			results = append(results, mkResult("https://core.example.com"+path, "state"))
+		}
+	}
+	// A different host with few pages must be untouched.
+	results = append(results, mkResult("https://api.example.com/x", "token"))
+
+	markSiteWide(results)
+
+	for _, r := range results {
+		for _, f := range r.Findings {
+			switch f.Param {
+			case "state":
+				if f.Confidence != finding.Low || !hasNote(f, "site-wide") {
+					t.Errorf("state should be low+site-wide, got %+v", f)
+				}
+			case "search", "token":
+				if f.Confidence == finding.Low || hasNote(f, "site-wide") {
+					t.Errorf("%s should NOT be site-wide, got %+v", f.Param, f)
+				}
+			}
+		}
+	}
+}
+
+func hasNote(f finding.Finding, n string) bool {
+	for _, x := range f.Notes {
+		if x == n {
+			return true
+		}
+	}
+	return false
+}
+
+func TestHostOf(t *testing.T) {
+	cases := map[string]string{
+		"https://core.verisk.com/x":     "core.verisk.com",
+		"http://core.verisk.com:8080/y": "core.verisk.com",
+		"https://a.b.c/path?q=1":        "a.b.c",
+	}
+	for in, want := range cases {
+		if got := hostOf(in); got != want {
+			t.Errorf("hostOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
 
 func TestNormalizeURL(t *testing.T) {
 	cases := []struct {

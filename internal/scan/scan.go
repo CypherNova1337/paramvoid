@@ -9,6 +9,8 @@ package scan
 import (
 	"context"
 	"math/rand"
+	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -17,17 +19,21 @@ import (
 
 	"github.com/CypherNova1337/paramvoid/internal/anomaly"
 	"github.com/CypherNova1337/paramvoid/internal/config"
+	"github.com/CypherNova1337/paramvoid/internal/finding"
 	"github.com/CypherNova1337/paramvoid/internal/httpx"
 	"github.com/CypherNova1337/paramvoid/internal/logx"
 	"github.com/CypherNova1337/paramvoid/internal/state"
 )
 
-// Result is the set of confirmed parameters for one URL.
+// Result is the set of confirmed parameters for one URL. Params is the plain
+// name list (Arjun-compatible); Findings carries the same parameters enriched
+// with the detection reason and a confidence tier.
 type Result struct {
-	URL     string
-	Method  string
-	Headers map[string]string
-	Params  []string
+	URL      string
+	Method   string
+	Headers  map[string]string
+	Params   []string
+	Findings []finding.Finding
 }
 
 // Status describes the outcome of scanning one URL.
@@ -45,6 +51,10 @@ type engine struct {
 	cfg     *config.Config
 	req     httpx.Request
 	factors anomaly.Factors
+	// static is true when the target URL points at a static asset (.js, .css,
+	// .png, robots.txt, ...). Such a file cannot have a real server-side
+	// parameter, so any confirmation on it is treated as low-confidence noise.
+	static bool
 }
 
 // Run scans a single request/URL and returns its confirmed parameters.
@@ -56,7 +66,7 @@ func Run(ctx context.Context, client *httpx.Client, cfg *config.Config, req http
 		return res, StatusSkipped
 	}
 
-	e := &engine{ctx: ctx, client: client, cfg: cfg, req: req}
+	e := &engine{ctx: ctx, client: client, cfg: cfg, req: req, static: isStaticAsset(req.URL)}
 
 	// --- Stability probe -------------------------------------------------
 	logx.Run("Probing the target for stability")
@@ -181,12 +191,13 @@ func Run(ctx context.Context, client *httpx.Client, cfg *config.Config, req http
 	if len(confirmed) > falsePositiveCeiling {
 		logx.ClearLine()
 		logx.Bad("Discarding %d hits for %s — implausibly many; the target appears to accept or echo arbitrary parameters rather than reveal real ones", len(confirmed), req.URL)
-		st.MarkDone(req.URL, res.Method, nil)
+		st.MarkDone(req.URL, res.Method, nil, nil)
 		return res, StatusEmpty
 	}
 
-	res.Params = confirmed
-	st.MarkDone(req.URL, res.Method, confirmed)
+	res.Findings = confirmed
+	res.Params = finding.Names(confirmed)
+	st.MarkDone(req.URL, res.Method, res.Params, confirmed)
 
 	if len(confirmed) == 0 {
 		return res, StatusEmpty
@@ -323,9 +334,12 @@ func (e *engine) processLevel(queue [][]string) (splits [][]string, singles []st
 }
 
 // verify re-tests each candidate individually to filter out flukes. A candidate
-// is confirmed only if it triggers a consistent anomaly across two checks.
-func (e *engine) verify(names []string) []string {
-	var confirmed []string
+// is confirmed only if it triggers a consistent anomaly across two checks. Each
+// confirmation records the detection reason and a confidence tier: reflection-
+// only hits (and hits on static assets) are kept but flagged low-confidence,
+// since those are the dominant false-positive source on SPA/CMS targets.
+func (e *engine) verify(names []string) []finding.Finding {
+	var confirmed []finding.Finding
 	single := e.cfg.URL != "" && e.cfg.ImportFile == "" // verbose per-param output for single-URL runs
 	for _, name := range names {
 		if e.ctx.Err() != nil {
@@ -346,12 +360,29 @@ func (e *engine) verify(names []string) []string {
 		if anomaly.Compare(r2, e.factors, v2) == anomaly.None {
 			continue
 		}
-		confirmed = append(confirmed, name)
+		f := finding.Finding{
+			Param:      name,
+			Reason:     string(reason1),
+			Confidence: finding.ForReason(string(reason1)),
+		}
+		if e.static {
+			f.Confidence = finding.Low
+			f.Note("static-asset")
+		}
+		confirmed = append(confirmed, f)
 		if single {
-			logx.Res("parameter detected: %s (based on: %s)", logx.Paint(logx.Bold, name), reason1)
+			logx.Res("parameter detected: %s (%s, %s%s)", logx.Paint(logx.Bold, name), reason1, f.Confidence, noteSuffix(f.Notes))
 		}
 	}
 	return confirmed
+}
+
+// noteSuffix renders any downgrade notes for the single-URL verbose line.
+func noteSuffix(notes []string) string {
+	if len(notes) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(notes, ", ")
 }
 
 // pageIsDynamic returns true if a junk request now deviates from the learned
@@ -464,8 +495,8 @@ func heuristic(body string) []string {
 				continue
 			}
 			name := m[1]
-			if name == "" || seen[name] {
-				continue
+			if name == "" || seen[name] || frameworkKeys[name] {
+				continue // skip blanks, dupes, and framework-internal keys
 			}
 			seen[name] = true
 			out = append(out, name)
@@ -477,4 +508,41 @@ func heuristic(body string) []string {
 	add(reNameAttr.FindAllStringSubmatch(body, -1))
 	add(reJSONKey.FindAllStringSubmatch(body, -1))
 	return out
+}
+
+// frameworkKeys are hydration/bootstrap keys that SPA frameworks embed in the
+// page (e.g. Next.js __NEXT_DATA__). They look like JSON keys to the extractor
+// but are never user-facing parameters, and a framework echoes them back for any
+// input — so seeding them just manufactures false positives. We skip them.
+var frameworkKeys = map[string]bool{
+	"__NEXT_DATA__": true, "pageProps": true, "buildId": true, "isFallback": true,
+	"appGip": true, "scriptLoader": true, "runtimeConfig": true, "nextExport": true,
+	"autoExport": true, "dynamicIds": true, "customServer": true, "gssp": true,
+	"gip": true, "gsp": true, "assetPrefix": true, "__N_SSG": true, "__N_SSP": true,
+	"serverRuntimeConfig": true, "publicRuntimeConfig": true, "defaultLocale": true,
+	"__NEXT_I18N__": true, "_nextI18Next": true, "__APOLLO_STATE__": true,
+	"__INITIAL_STATE__": true, "__PRELOADED_STATE__": true, "__NUXT__": true,
+}
+
+// staticAssetExt is the set of file extensions that denote a static asset: a
+// file whose bytes don't change with query parameters. A "parameter" confirmed
+// on one of these is a platform/router artifact, not a real handler.
+var staticAssetExt = map[string]bool{
+	".js": true, ".mjs": true, ".css": true, ".map": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
+	".ico": true, ".webp": true, ".bmp": true, ".avif": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	".txt": true, ".xml": true, ".pdf": true, ".csv": true,
+}
+
+// isStaticAsset reports whether a URL's path ends in a known static-asset
+// extension. It is deliberately conservative: dynamic extensions such as .aspx,
+// .php, .jsp, .do, .action and .json are not treated as static.
+func isStaticAsset(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	ext := strings.ToLower(path.Ext(u.Path))
+	return staticAssetExt[ext]
 }

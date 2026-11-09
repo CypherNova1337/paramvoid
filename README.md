@@ -40,6 +40,9 @@ one-at-a-time scan would need.
   it slows down on 429/503 and recovers, rather than getting you blocked.
 - **Resumable.** Long scans checkpoint to a file and pick up where they stopped.
 - **GET, POST, JSON and XML** bodies, not just query strings.
+- **Grades every finding** high / medium / low, so framework echo and static-file
+  noise label themselves instead of burying the parameters that matter — this is
+  what keeps a bulk scan of a modern site readable.
 - **Routes through Burp** so findings land in the proxy history you're already
   working from.
 
@@ -149,11 +152,38 @@ than it looks.
 | `-no-color` | off | Disable coloured output |
 | `-version` | — | Print version and exit |
 
+## Reading the results
+
+Not every hit is worth the same attention. The same response that reveals a real
+parameter also fires when a framework simply echoes your input back — modern SPA
+and CMS stacks reflect *every* query key, so a naive scan of a large site drowns
+a few real findings under hundreds of look-alikes. paramvoid grades each hit so
+you can tell them apart:
+
+- **high** — the status code or redirect changed. The server is branching on the
+  parameter; this is where to look first.
+- **medium** — the body or headers changed in a way echo alone doesn't explain.
+- **low** — reflection-only, a hit on a static file (`robots.txt`, `.js`, `.css`),
+  or a parameter that reacts the same way across most of a host's pages
+  (`site-wide`, i.e. framework/platform behaviour). Kept, not discarded — a
+  reflected value is still an XSS lead — but filter these out when you're hunting
+  real handlers.
+
+The JSON output keeps the plain `params` list (so existing tooling still reads
+it) and adds a `findings` array with each parameter's `reason`, `confidence` and
+any `notes`. The text output (`-oT`) adds a confidence column. The end-of-run
+summary counts each tier, so you see at a glance how many hits are worth a look.
+
+```
+[*] Confidence: 1 high, 0 medium, 7 low (low = reflection-only / static-asset /
+    site-wide; keep for XSS leads, filter for real handlers).
+```
+
 ## Good to know
 
 - **A hit means "the server reacted", not "you found a bug."** Some parameters
   change a response for entirely boring reasons. Confirm by hand before it goes
-  in a report.
+  in a report — and start with the high-confidence ones.
 - **Try `-casing`.** Applications are inconsistent about naming, and `user_id`,
   `userId` and `userid` are three different guesses. Running a pass in each
   style finds parameters a single pass misses.

@@ -10,15 +10,18 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/CypherNova1337/paramvoid/internal/finding"
 )
 
 // URLState is the saved progress for one target URL.
 type URLState struct {
-	Done       bool       `json:"done"`
-	Params     []string   `json:"params,omitempty"`     // final confirmed params (when Done)
-	Pending    [][]string `json:"pending,omitempty"`    // chunk queue still to narrow (in-progress)
-	Candidates []string   `json:"candidates,omitempty"` // singles awaiting verification
-	Method     string     `json:"method,omitempty"`
+	Done       bool              `json:"done"`
+	Params     []string          `json:"params,omitempty"`     // final confirmed param names (when Done)
+	Findings   []finding.Finding `json:"findings,omitempty"`   // same params, with reason + confidence
+	Pending    [][]string        `json:"pending,omitempty"`    // chunk queue still to narrow (in-progress)
+	Candidates []string          `json:"candidates,omitempty"` // singles awaiting verification
+	Method     string            `json:"method,omitempty"`
 }
 
 // State is the on-disk checkpoint. It is safe for concurrent use.
@@ -99,13 +102,14 @@ func (s *State) SaveProgress(url, method string, pending [][]string, candidates 
 	}
 }
 
-// MarkDone records final params for a URL and flushes immediately.
-func (s *State) MarkDone(url, method string, params []string) {
+// MarkDone records final params (names and their findings) for a URL and
+// flushes immediately.
+func (s *State) MarkDone(url, method string, params []string, findings []finding.Finding) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	s.URLs[url] = &URLState{Done: true, Params: params, Method: method}
+	s.URLs[url] = &URLState{Done: true, Params: params, Findings: findings, Method: method}
 	s.mu.Unlock()
 	s.flush()
 }

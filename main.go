@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/CypherNova1337/paramvoid/internal/config"
+	"github.com/CypherNova1337/paramvoid/internal/finding"
 	"github.com/CypherNova1337/paramvoid/internal/httpx"
 	"github.com/CypherNova1337/paramvoid/internal/logx"
 	"github.com/CypherNova1337/paramvoid/internal/output"
@@ -85,7 +86,7 @@ func main() {
 		if st.IsDone(req.URL) {
 			logx.Info("Skipping already-completed %s (resumed)", req.URL)
 			if saved := st.Get(req.URL); saved != nil && len(saved.Params) > 0 {
-				results = append(results, scan.Result{URL: req.URL, Method: saved.Method, Headers: req.Headers, Params: saved.Params})
+				results = append(results, scan.Result{URL: req.URL, Method: saved.Method, Headers: req.Headers, Params: saved.Params, Findings: saved.Findings})
 			}
 			continue
 		}
@@ -96,7 +97,7 @@ func main() {
 		switch status {
 		case scan.StatusOK:
 			results = append(results, res)
-			logx.Good("Parameters found: %s", strings.Join(res.Params, ", "))
+			logx.Good("Parameters found: %s%s", strings.Join(res.Params, ", "), tierSuffix(res.Findings))
 			_ = output.Write(cfg, results) // persist incrementally
 		case scan.StatusEmpty:
 			logx.Info("No parameters were discovered.")
@@ -118,11 +119,92 @@ func main() {
 		st.Remove() // clean up on a fully successful run
 	}
 
+	// Cross-URL pass: flag parameters that recur across most of a host as
+	// site-wide (framework/platform) noise before the final write.
+	markSiteWide(results)
+
 	if err := output.Write(cfg, results); err != nil {
 		logx.Bad("Failed to write output: %v", err)
 	}
 
 	printSummary(results, client.Sent(), time.Since(start))
+}
+
+// markSiteWide downgrades parameters that appear on many distinct URLs of the
+// same host. A parameter a server genuinely handles on one endpoint rarely
+// shows up, reacting identically, across most of a site's pages; when it does
+// it's almost always a framework/platform behaviour (hydration state, a global
+// query handler) rather than a real per-endpoint parameter. These dominate bulk
+// scans of modern SPA/CMS targets, so we keep them but flag them low-confidence
+// with a "site-wide" note instead of letting them drown the real findings.
+func markSiteWide(results []scan.Result) {
+	type key struct{ host, param string }
+	urlsPerHost := map[string]map[string]bool{}
+	hits := map[key]int{}
+	for _, r := range results {
+		h := hostOf(r.URL)
+		if urlsPerHost[h] == nil {
+			urlsPerHost[h] = map[string]bool{}
+		}
+		urlsPerHost[h][r.URL] = true
+		for _, f := range r.Findings {
+			hits[key{h, f.Param}]++
+		}
+	}
+	for i := range results {
+		h := hostOf(results[i].URL)
+		total := len(urlsPerHost[h])
+		if total < 4 { // need a few pages before "site-wide" means anything
+			continue
+		}
+		for j := range results[i].Findings {
+			f := &results[i].Findings[j]
+			if c := hits[key{h, f.Param}]; c >= 3 && c*2 >= total {
+				f.Confidence = finding.Low
+				f.Note("site-wide")
+			}
+		}
+	}
+}
+
+func hostOf(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return raw
+}
+
+// tierSuffix renders a compact confidence breakdown like " [2 high, 1 low]".
+func tierSuffix(fs []finding.Finding) string {
+	high, medium, low := tierCounts(fs)
+	var parts []string
+	if high > 0 {
+		parts = append(parts, fmt.Sprintf("%d high", high))
+	}
+	if medium > 0 {
+		parts = append(parts, fmt.Sprintf("%d medium", medium))
+	}
+	if low > 0 {
+		parts = append(parts, fmt.Sprintf("%d low", low))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(parts, ", ") + "]"
+}
+
+func tierCounts(fs []finding.Finding) (high, medium, low int) {
+	for _, f := range fs {
+		switch f.Confidence {
+		case finding.High:
+			high++
+		case finding.Medium:
+			medium++
+		default:
+			low++
+		}
+	}
+	return
 }
 
 // ---------------------------------------------------------------------------
@@ -487,10 +569,18 @@ func printSummary(results []scan.Result, sent int64, elapsed time.Duration) {
 	if *flagQuiet {
 		return
 	}
-	total := 0
+	total, high, medium, low := 0, 0, 0, 0
 	for _, r := range results {
 		total += len(r.Params)
+		h, m, l := tierCounts(r.Findings)
+		high += h
+		medium += m
+		low += l
 	}
 	logx.Info("Done in %s — %d request(s) sent, %d parameter(s) across %d URL(s).",
 		elapsed.Round(time.Millisecond), sent, total, len(results))
+	if high+medium+low > 0 {
+		logx.Info("Confidence: %d high, %d medium, %d low (low = reflection-only / static-asset / site-wide; keep for XSS leads, filter for real handlers).",
+			high, medium, low)
+	}
 }
